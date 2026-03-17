@@ -1,0 +1,5 @@
+# Data (generated / downloaded)
+data/
+
+# Training runs (model checkpoints, logs)
+runs/
