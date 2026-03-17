@@ -10,7 +10,13 @@ import math
 import json
 
 class SyntheticJerseyEngine:
-    def __init__(self):
+    def __init__(
+        self,
+        output_min_dim=30,
+        output_max_dim=80,
+        output_scale_alpha=0.9,
+        output_scale_beta=4.2,
+    ):
         # Top 25 Most Common / Iconic Hockey Jersey Colors
         self.jersey_colors =[
             (17, 17, 17),    # Black
@@ -43,6 +49,11 @@ class SyntheticJerseyEngine:
         self.fonts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
         os.makedirs(self.fonts_dir, exist_ok=True)
         self.font_paths = self._ensure_fonts_downloaded()
+        self.number_font_pool, self.name_font_pool = self._build_font_pools()
+        self.output_min_dim = output_min_dim
+        self.output_max_dim = output_max_dim
+        self.output_scale_alpha = output_scale_alpha
+        self.output_scale_beta = output_scale_beta
 
     def _ensure_fonts_downloaded(self):
         fonts_to_get = {
@@ -53,7 +64,7 @@ class SyntheticJerseyEngine:
             "5_Spurred_NHL.ttf": "https://raw.githubusercontent.com/google/fonts/main/ofl/blackopsone/BlackOpsOne-Regular.ttf"
         }
         
-        paths =[]
+        paths = []
         for name, url in fonts_to_get.items():
             path = os.path.join(self.fonts_dir, name)
             if not os.path.exists(path):
@@ -64,12 +75,52 @@ class SyntheticJerseyEngine:
                     pass
             if os.path.exists(path):
                 paths.append(path)
-                
-        if not paths: paths =["impact.ttf", "arialbd.ttf"]
-        return paths
 
-    def get_font(self, size):
-        chosen = random.choice(self.font_paths)
+        # Pick up any additional local fonts dropped into synthetic-jersey/fonts.
+        for filename in os.listdir(self.fonts_dir):
+            if not filename.lower().endswith((".ttf", ".otf")):
+                continue
+            path = os.path.join(self.fonts_dir, filename)
+            if path not in paths:
+                paths.append(path)
+
+        if not paths:
+            paths = ["impact.ttf", "arialbd.ttf"]
+        return sorted(paths)
+
+    def _build_font_pools(self):
+        number_pool = []
+        name_pool = []
+
+        for path in self.font_paths:
+            filename = os.path.basename(path).lower()
+            number_weight = 2.0
+            name_weight = 1.0
+
+            if any(token in filename for token in ["varsity", "block", "heavy", "spurred", "nhl", "anton", "graduate"]):
+                number_weight = 4.0
+            if any(token in filename for token in ["angled", "russo", "modern"]):
+                number_weight = 3.0
+            if any(token in filename for token in ["tall", "condensed", "bebas"]):
+                name_weight = 3.0
+                number_weight = max(number_weight, 2.5)
+            if any(token in filename for token in ["blackops"]):
+                number_weight = 3.5
+                name_weight = 0.6
+
+            number_pool.append((path, number_weight))
+            name_pool.append((path, name_weight))
+
+        return number_pool, name_pool
+
+    def get_font(self, size, purpose="number"):
+        pool = self.number_font_pool if purpose == "number" else self.name_font_pool
+        if pool:
+            paths = [path for path, _ in pool]
+            weights = [weight for _, weight in pool]
+            chosen = random.choices(paths, weights=weights, k=1)[0]
+        else:
+            chosen = random.choice(self.font_paths)
         try:
             return ImageFont.truetype(chosen, size)
         except IOError:
@@ -129,8 +180,9 @@ class SyntheticJerseyEngine:
     def render_number_layer(self, player_number, base_size, text_color, outline_color):
         measure_img = Image.new("L", (1, 1), 0)
         measure_draw = ImageDraw.Draw(measure_img)
-        font = self.get_font(random.randint(102, 128))
-        outline_thickness = random.randint(2, 6)
+        font_size = random.randint(int(base_size * 0.85), int(base_size * 0.95))
+        font = self.get_font(font_size, purpose="number")
+        outline_thickness = random.randint(4, 10)
         glyph_margin = outline_thickness + 6
         inter_digit_spacing = random.randint(-3, 3)
 
@@ -175,20 +227,22 @@ class SyntheticJerseyEngine:
             number_img.alpha_composite(glyph_img, (glyph_x, glyph_y))
 
         number_img = self.apply_text_style_transform(number_img)
-        max_number_width = int(base_size * 0.82)
-        max_number_height = int(base_size * 0.56)
+        max_number_width = int(base_size * 0.98)
+        max_number_height = int(base_size * 0.96)
         fit_scale = min(
             max_number_width / max(1, number_img.width),
             max_number_height / max(1, number_img.height),
-            1.0,
         )
-        if fit_scale < 1.0:
+        if abs(fit_scale - 1.0) > 0.01:
             fit_width = max(1, int(round(number_img.width * fit_scale)))
             fit_height = max(1, int(round(number_img.height * fit_scale)))
             number_img = number_img.resize((fit_width, fit_height), resample=Image.BICUBIC)
 
         layer = Image.new("RGBA", (base_size, base_size), (0, 0, 0, 0))
-        target_center_y = int(base_size * random.uniform(0.56, 0.6))
+        if random.random() < 0.8:
+            target_center_y = int(base_size * random.uniform(0.49, 0.52))
+        else:
+            target_center_y = int(base_size * random.uniform(0.47, 0.55))
         paste_x = max(0, (base_size - number_img.width) // 2)
         paste_y = max(0, int(round(target_center_y - number_img.height / 2)))
         paste_y = min(max(0, base_size - number_img.height), paste_y)
@@ -212,19 +266,21 @@ class SyntheticJerseyEngine:
         h, w = arr.shape[:2]
         x, y = np.meshgrid(np.arange(w), np.arange(h))
         
-        fold_x_freq = random.uniform(12, 34)
-        fold_x_amp = random.uniform(6, 15)
-        secondary_x_freq = random.uniform(20, 52)
-        secondary_x_amp = random.uniform(2, 6)
-        x_phase_tilt = random.uniform(0.08, 0.22)
+        # Vertical folds (dominant — shift pixels left/right based on y)
+        fold_x_freq = random.uniform(18, 40)
+        fold_x_amp = random.uniform(3, 8)
+        secondary_x_freq = random.uniform(28, 56)
+        secondary_x_amp = random.uniform(1, 4)
+        x_phase_tilt = random.uniform(0.05, 0.15)
         shift_x = np.sin(y / fold_x_freq) * fold_x_amp
         shift_x += np.sin((y + x * x_phase_tilt) / secondary_x_freq) * secondary_x_amp
-        
-        fold_y_freq = random.uniform(16, 42)
-        fold_y_amp = random.uniform(4, 10)
-        secondary_y_freq = random.uniform(22, 60)
-        secondary_y_amp = random.uniform(1.5, 4.5)
-        y_phase_tilt = random.uniform(0.05, 0.18)
+
+        # Horizontal ripples (very subtle)
+        fold_y_freq = random.uniform(30, 56)
+        fold_y_amp = random.uniform(0.5, 2.5)
+        secondary_y_freq = random.uniform(36, 64)
+        secondary_y_amp = random.uniform(0.3, 1.2)
+        y_phase_tilt = random.uniform(0.02, 0.08)
         shift_y = np.cos(x / fold_y_freq) * fold_y_amp
         shift_y += np.cos((x - y * y_phase_tilt) / secondary_y_freq) * secondary_y_amp
         
@@ -236,20 +292,10 @@ class SyntheticJerseyEngine:
 
     def apply_broadcast_noise(self, img):
         arr = np.array(img).astype(np.int16)
-        noise_intensity = random.uniform(3, 15) # Softened slightly to prevent color washing
+        noise_intensity = random.uniform(3, 12)
         noise = np.random.normal(0, noise_intensity, arr.shape)
         arr = np.clip(arr + noise, 0, 255).astype(np.uint8)
-        
-        if random.random() > 0.5:
-            speckle_amount = random.uniform(0.01, 0.03)
-            num_salt = np.ceil(speckle_amount * arr.size * 0.5)
-            
-            coords =[np.random.randint(0, i - 1, int(num_salt)) for i in arr.shape[:2]]
-            arr[tuple(coords)] = 255
 
-            coords =[np.random.randint(0, i - 1, int(num_salt)) for i in arr.shape[:2]]
-            arr[tuple(coords)] = 0
-            
         noisy_img = Image.fromarray(arr)
         noisy_img = noisy_img.filter(ImageFilter.GaussianBlur(radius=random.uniform(0.4, 1.2)))
         return noisy_img
@@ -261,29 +307,30 @@ class SyntheticJerseyEngine:
         img = Image.new('RGB', (base_size, base_size), bg_color)
         draw = ImageDraw.Draw(img)
 
-        # Draw Fake Name & Number
-        name_font = self.get_font(random.randint(24, 34))
-        
-        fake_name_length = random.randint(5, 9)
-        player_name = "".join(random.choices(string.ascii_uppercase, k=fake_name_length))
+        # Draw fake name rarely; it is intentional noise, not a core feature.
+        include_name = random.random() < 0.05
+        if include_name:
+            name_font = self.get_font(random.randint(24, 34), purpose="name")
+            fake_name_length = random.randint(5, 9)
+            player_name = "".join(random.choices(string.ascii_uppercase, k=fake_name_length))
         if player_number is None:
             player_number = str(random.randint(0, 99))
         else:
             player_number = str(int(player_number))
 
-        # Center fake name
-        bbox_name = draw.textbbox((0, 0), player_name, font=name_font)
-        nx = (base_size - (bbox_name[2] - bbox_name[0])) // 2
-        self.draw_text_with_outline(
-            draw,
-            nx,
-            random.randint(26, 34),
-            player_name,
-            name_font,
-            text_color,
-            outline_color,
-            thickness=random.randint(1, 3),
-        )
+        if include_name:
+            bbox_name = draw.textbbox((0, 0), player_name, font=name_font)
+            nx = (base_size - (bbox_name[2] - bbox_name[0])) // 2
+            self.draw_text_with_outline(
+                draw,
+                nx,
+                random.randint(26, 34),
+                player_name,
+                name_font,
+                text_color,
+                outline_color,
+                thickness=random.randint(1, 3),
+            )
 
         number_layer, bbox_num = self.render_number_layer(player_number, base_size, text_color, outline_color)
         num_left, num_top, num_right, num_bottom = bbox_num
@@ -347,21 +394,26 @@ class SyntheticJerseyEngine:
         img = self.apply_fabric_distortion(img)
 
         # ==========================================
+        # BELL CURVE ROTATION
+        # ==========================================
+        # Positive PIL rotation is counter-clockwise. Keep the rink-loss side tied
+        # to turn direction instead of randomizing it.
+        angle = np.random.normal(loc=0, scale=22)
+        angle = float(np.clip(angle, -60, 60))
+
+        # ==========================================
         # WHITE ICE BACKGROUND (Simulates Turned Body)
         # ==========================================
-        # This draws the pure white ice line BEFORE the rotation, guaranteeing 
-        # it rotates and perspective-squishes exactly perfectly with the player numbers.
-        draw = ImageDraw.Draw(img)
-        if random.random() > 0.3: # 70% chance to show ice
-            ice_color = (250, 252, 255) # Pure/bright white rink color
-            ice_width = random.randint(25, 65)
-            
-            if random.random() > 0.5:
-                # Vertical white ice strip on strictly the LEFT side
-                draw.rectangle([(0, 0), (ice_width, base_size)], fill=ice_color)
-            else:
-                # Vertical white ice strip on strictly the RIGHT side
-                draw.rectangle([(base_size - ice_width, 0), (base_size, base_size)], fill=ice_color)
+        # The white half-plane is drawn analytically in final crop space AFTER all
+        # transforms (rotation, squish, crop, resize) are complete.  This avoids
+        # raster erosion from anti-aliased rotate/resize that plagued the old
+        # pre-rotation mask approach.
+        ice_color = (250, 252, 255)
+        angled_crop = abs(angle) >= 20
+        ice_probability = 1.00 if angled_crop else 0.40
+        ice_corner = None
+        if random.random() < ice_probability:
+            ice_corner = "top_left" if angle < 0 else "top_right"
 
         # MINIMAL, EDGE-ONLY OCCLUSIONS
         if random.random() > 0.5:  
@@ -402,14 +454,11 @@ class SyntheticJerseyEngine:
             img = Image.alpha_composite(img.convert("RGBA"), occlusion).convert("RGB")
 
         # ==========================================
-        # BELL CURVE ROTATION & PERSPECTIVE SQUISH
+        # PERSPECTIVE SQUISH
         # ==========================================
-        angle = np.random.normal(loc=0, scale=24) 
-        angle = float(np.clip(angle, -60, 60)) 
-
         # 3D Realism
         squish_intensity = random.uniform(0.3, 0.5)
-        compress_ratio = max(0.5, 1.0 - (abs(angle) / 60.0) * squish_intensity)
+        compress_ratio = max(0.45, 1.0 - (abs(angle) / 60.0) * squish_intensity)
         
         # Apply 2D Rotation and Perspective Width Scale
         img = img.rotate(angle, resample=Image.BICUBIC, fillcolor=bg_color)
@@ -426,8 +475,9 @@ class SyntheticJerseyEngine:
         rotated_w = current_num_w * math.cos(angle_rad) + num_h * math.sin(angle_rad)
         rotated_h = current_num_w * math.sin(angle_rad) + num_h * math.cos(angle_rad)
         
-        view_size_x = max(60, int(rotated_w / random.uniform(0.75, 0.90)))
-        view_size_y = max(60, int(rotated_h / random.uniform(0.75, 0.90)))
+        # Keep crops only modestly tighter than before so the digits stay fully visible.
+        view_size_x = max(56, int(rotated_w / random.uniform(0.80, 0.93)))
+        view_size_y = max(64, int(rotated_h / random.uniform(0.70, 0.85)))
 
         image_center = base_size / 2
         dx = num_center_x - image_center
@@ -438,6 +488,16 @@ class SyntheticJerseyEngine:
 
         transformed_center_x = rotated_center_x * compress_ratio
         transformed_center_y = rotated_center_y
+
+        # Keep more of the top-corner rink loss in frame without forcing digit truncation.
+        if ice_corner is not None:
+            side_context_shift = 0.0
+            top_context_shift = random.uniform(0.05, 0.11) * view_size_y
+            transformed_center_y -= top_context_shift
+            if ice_corner == "top_left":
+                transformed_center_x -= side_context_shift
+            else:
+                transformed_center_x += side_context_shift
         transformed_corners = []
         for point_x, point_y in number_corners:
             dx = point_x - image_center
@@ -466,14 +526,14 @@ class SyntheticJerseyEngine:
         img = img.crop((left, top, right, bottom))
         transformed_corners = [(x - left, y - top) for x, y in transformed_corners]
 
-        # Bias output sizes toward smaller low-res crops while keeping the 30-150 range.
-        min_dim = 30
-        max_dim = 150
+        # Bias output sizes toward smaller low-res crops while keeping a configurable range.
+        min_dim = self.output_min_dim
+        max_dim = self.output_max_dim
         scale_min = max(min_dim / view_size_x, min_dim / view_size_y)
         scale_max = min(max_dim / view_size_x, max_dim / view_size_y)
 
         if scale_min <= scale_max:
-            scale_bias = random.betavariate(1.3, 3.0)
+            scale_bias = random.betavariate(self.output_scale_alpha, self.output_scale_beta)
             scale = scale_min + (scale_max - scale_min) * scale_bias
         else:
             scale = min(max_dim / view_size_x, max_dim / view_size_y)
@@ -481,6 +541,54 @@ class SyntheticJerseyEngine:
         target_w = max(min_dim, min(max_dim, int(round(view_size_x * scale))))
         target_h = max(min_dim, min(max_dim, int(round(view_size_y * scale))))
         img = img.resize((target_w, target_h), resample=Image.BICUBIC)
+
+        # ==========================================
+        # ANALYTIC WHITE-CUT COMPOSITOR (final crop space)
+        # ==========================================
+        # Compute a diagonal half-plane boundary directly in final pixel coords.
+        # No raster mask survives transforms — this is drawn fresh at output res.
+        if ice_corner is not None:
+            # The cut boundary matches the jersey rotation exactly so the
+            # diagonal aligns with the tilted number.
+            angle_rad = math.radians(angle)
+
+            # How far inward from the corner the boundary sits at y=0.
+            # 25-45% of width so cuts are substantial (~35% average).
+            inset_frac = random.uniform(0.25, 0.45)
+            inset_px = inset_frac * target_w
+
+            # Pixel coordinate grids
+            xs = np.arange(target_w, dtype=np.float32)
+            ys = np.arange(target_h, dtype=np.float32)
+            gx, gy = np.meshgrid(xs, ys)
+
+            if ice_corner == "top_left":
+                # Normal pointing right into jersey, tilted by rotation angle.
+                # Anchor at (inset_px, 0). Line tilts with tan(angle) slope.
+                signed_dist = (
+                    math.cos(angle_rad) * (gx - inset_px)
+                    - math.sin(angle_rad) * gy
+                )
+            else:
+                # Mirror: normal pointing left into jersey.
+                # Anchor at (target_w - inset_px, 0).
+                signed_dist = (
+                    -math.cos(angle_rad) * (gx - (target_w - inset_px))
+                    + math.sin(angle_rad) * gy
+                )
+
+            # Everything with signed_dist < 0 is on the white (ice) side.
+            # Soft edge: ~1.5px feather for anti-aliasing.
+            feather = 1.5
+            alpha = np.clip((-signed_dist) / feather, 0.0, 1.0).astype(np.float32)
+
+            # Composite: blend ice_color over the image using alpha
+            img_arr = np.array(img, dtype=np.float32)
+            ice_arr = np.array(ice_color, dtype=np.float32).reshape(1, 1, 3)
+            alpha_3 = alpha[:, :, np.newaxis]
+            composited = ice_arr * alpha_3 + img_arr * (1.0 - alpha_3)
+            img = Image.fromarray(np.clip(composited, 0, 255).astype(np.uint8))
+
         scale_x = target_w / view_size_x
         scale_y = target_h / view_size_y
         transformed_corners = [(x * scale_x, y * scale_y) for x, y in transformed_corners]
