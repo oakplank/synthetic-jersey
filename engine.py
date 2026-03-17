@@ -180,7 +180,7 @@ class SyntheticJerseyEngine:
     def render_number_layer(self, player_number, base_size, text_color, outline_color):
         measure_img = Image.new("L", (1, 1), 0)
         measure_draw = ImageDraw.Draw(measure_img)
-        font_size = random.randint(int(base_size * 0.85), int(base_size * 0.95))
+        font_size = int(base_size * 1.25)
         font = self.get_font(font_size, purpose="number")
         outline_thickness = random.randint(4, 10)
         glyph_margin = outline_thickness + 6
@@ -227,8 +227,8 @@ class SyntheticJerseyEngine:
             number_img.alpha_composite(glyph_img, (glyph_x, glyph_y))
 
         number_img = self.apply_text_style_transform(number_img)
-        max_number_width = int(base_size * 0.98)
-        max_number_height = int(base_size * 0.96)
+        max_number_width = base_size
+        max_number_height = base_size
         fit_scale = min(
             max_number_width / max(1, number_img.width),
             max_number_height / max(1, number_img.height),
@@ -266,7 +266,7 @@ class SyntheticJerseyEngine:
         h, w = arr.shape[:2]
         x, y = np.meshgrid(np.arange(w), np.arange(h))
         
-        # Vertical folds (dominant — shift pixels left/right based on y)
+        # Vertical curtain folds only — shift pixels left/right based on y position
         fold_x_freq = random.uniform(18, 40)
         fold_x_amp = random.uniform(3, 8)
         secondary_x_freq = random.uniform(28, 56)
@@ -275,17 +275,8 @@ class SyntheticJerseyEngine:
         shift_x = np.sin(y / fold_x_freq) * fold_x_amp
         shift_x += np.sin((y + x * x_phase_tilt) / secondary_x_freq) * secondary_x_amp
 
-        # Horizontal ripples (very subtle)
-        fold_y_freq = random.uniform(30, 56)
-        fold_y_amp = random.uniform(0.5, 2.5)
-        secondary_y_freq = random.uniform(36, 64)
-        secondary_y_amp = random.uniform(0.3, 1.2)
-        y_phase_tilt = random.uniform(0.02, 0.08)
-        shift_y = np.cos(x / fold_y_freq) * fold_y_amp
-        shift_y += np.cos((x - y * y_phase_tilt) / secondary_y_freq) * secondary_y_amp
-        
         new_x = np.clip(x + shift_x, 0, w - 1).astype(int)
-        new_y = np.clip(y + shift_y, 0, h - 1).astype(int)
+        new_y = y
         
         distorted_arr = arr[new_y, new_x]
         return Image.fromarray(distorted_arr)
@@ -302,9 +293,14 @@ class SyntheticJerseyEngine:
 
     def generate_image(self, player_number=None, include_metadata=False):
         bg_color, text_color, outline_color = self.get_contrasting_colors()
-        
+
+        # Number is rendered at base_size, then placed on a larger canvas so
+        # surrounding jersey context (shadows, trapezoid, fabric) survives
+        # rotation and cropping.
         base_size = 256
-        img = Image.new('RGB', (base_size, base_size), bg_color)
+        canvas_size = int(base_size * 1.8)
+        canvas_offset = (canvas_size - base_size) // 2
+        img = Image.new('RGB', (canvas_size, canvas_size), bg_color)
         draw = ImageDraw.Draw(img)
 
         # Draw fake name rarely; it is intentional noise, not a core feature.
@@ -320,11 +316,11 @@ class SyntheticJerseyEngine:
 
         if include_name:
             bbox_name = draw.textbbox((0, 0), player_name, font=name_font)
-            nx = (base_size - (bbox_name[2] - bbox_name[0])) // 2
+            nx = (canvas_size - (bbox_name[2] - bbox_name[0])) // 2
             self.draw_text_with_outline(
                 draw,
                 nx,
-                random.randint(26, 34),
+                canvas_offset + random.randint(26, 34),
                 player_name,
                 name_font,
                 text_color,
@@ -336,6 +332,11 @@ class SyntheticJerseyEngine:
         num_left, num_top, num_right, num_bottom = bbox_num
         num_w = num_right - num_left
         num_h = num_bottom - num_top
+        # Offset number bbox coords to canvas space
+        num_left += canvas_offset
+        num_top += canvas_offset
+        num_right += canvas_offset
+        num_bottom += canvas_offset
         num_center_x = (num_left + num_right) / 2
         num_center_y = (num_top + num_bottom) / 2
         number_corners = [
@@ -344,15 +345,18 @@ class SyntheticJerseyEngine:
             (num_right, num_bottom),
             (num_left, num_bottom),
         ]
-        img = Image.alpha_composite(img.convert('RGBA'), number_layer).convert('RGB')
+        # Paste the number layer centered on the larger canvas
+        canvas_layer = Image.new("RGBA", (canvas_size, canvas_size), (0, 0, 0, 0))
+        canvas_layer.paste(number_layer, (canvas_offset, canvas_offset))
+        img = Image.alpha_composite(img.convert('RGBA'), canvas_layer).convert('RGB')
 
         # Shadows/Highlights (Fabric folds)
-        overlay = Image.new('RGBA', (base_size, base_size), (0, 0, 0, 0))
+        overlay = Image.new('RGBA', (canvas_size, canvas_size), (0, 0, 0, 0))
         draw_over = ImageDraw.Draw(overlay)
         for _ in range(random.randint(2, 5)):
-            fx = random.randint(0, base_size)
+            fx = random.randint(0, canvas_size)
             start_y = random.randint(-24, 24)
-            end_y = base_size + random.randint(-24, 24)
+            end_y = canvas_size + random.randint(-24, 24)
             shadow_width = random.randint(18, 42)
             shadow_offset = random.randint(-55, 55)
             draw_over.line(
@@ -370,28 +374,47 @@ class SyntheticJerseyEngine:
 
         if random.random() > 0.35:
             for _ in range(random.randint(1, 2)):
-                fy = random.randint(50, base_size - 40)
+                fy = random.randint(50, canvas_size - 40)
                 crest_height = random.randint(18, 34)
                 crest_left = random.randint(-30, 30)
-                crest_right = base_size + random.randint(-30, 30)
+                crest_right = canvas_size + random.randint(-30, 30)
                 draw_over.line(
-                    [(crest_left, fy), (base_size // 2, fy + crest_height), (crest_right, fy)],
+                    [(crest_left, fy), (canvas_size // 2, fy + crest_height), (crest_right, fy)],
                     fill=(0, 0, 0, random.randint(30, 70)),
                     width=random.randint(12, 24),
                     joint="curve",
                 )
                 draw_over.line(
-                    [(crest_left, fy - 8), (base_size // 2, fy + crest_height - 8), (crest_right, fy - 8)],
+                    [(crest_left, fy - 8), (canvas_size // 2, fy + crest_height - 8), (crest_right, fy - 8)],
                     fill=(255, 255, 255, random.randint(18, 55)),
                     width=random.randint(10, 20),
                     joint="curve",
                 )
-                            
+
         overlay = overlay.filter(ImageFilter.GaussianBlur(10))
         img = Image.alpha_composite(img.convert('RGBA'), overlay).convert('RGB')
 
         # Fabric Distortion
         img = self.apply_fabric_distortion(img)
+
+        # Black trapezoid from below (simulates shorts/equipment blocking bottom of jersey).
+        # Positioned relative to the number so it crops the bottom 5-40% of the digits.
+        if random.random() < 0.10:
+            crop_frac = random.uniform(0.05, 0.40)
+            trap_top = int(num_bottom - num_h * crop_frac)
+            inset = random.randint(0, 30)
+            trap_layer = Image.new("RGBA", (canvas_size, canvas_size), (0, 0, 0, 0))
+            trap_draw = ImageDraw.Draw(trap_layer)
+            trap_draw.polygon(
+                [
+                    (-inset, trap_top),
+                    (canvas_size + inset, trap_top),
+                    (canvas_size + inset, canvas_size + 100),
+                    (-inset, canvas_size + 100),
+                ],
+                fill=(0, 0, 0, 255),
+            )
+            img = Image.alpha_composite(img.convert("RGBA"), trap_layer).convert("RGB")
 
         # ==========================================
         # BELL CURVE ROTATION
@@ -416,22 +439,22 @@ class SyntheticJerseyEngine:
             ice_corner = "top_left" if angle < 0 else "top_right"
 
         # MINIMAL, EDGE-ONLY OCCLUSIONS
-        if random.random() > 0.5:  
+        if random.random() > 0.5:
             edge = random.choice(["left", "right", "bottom"])
             blob_w = random.randint(28, 70)
             blob_h = random.randint(48, 100)
-            
+
             if edge == "left":
                 bx = random.randint(-30, 0)
-                by = random.randint(80, 200)
+                by = random.randint(80, canvas_size - 80)
             elif edge == "right":
-                bx = base_size - random.randint(0, 30)
-                by = random.randint(80, 200)
+                bx = canvas_size - random.randint(0, 30)
+                by = random.randint(80, canvas_size - 80)
             else:
-                bx = random.randint(40, 200)
-                by = base_size - random.randint(0, 30)
+                bx = random.randint(40, canvas_size - 80)
+                by = canvas_size - random.randint(0, 30)
 
-            occlusion = Image.new("RGBA", (base_size, base_size), (0, 0, 0, 0))
+            occlusion = Image.new("RGBA", (canvas_size, canvas_size), (0, 0, 0, 0))
             occ_draw = ImageDraw.Draw(occlusion)
             occ_draw.ellipse(
                 [bx, by, bx + blob_w, by + blob_h],
@@ -459,11 +482,11 @@ class SyntheticJerseyEngine:
         # 3D Realism
         squish_intensity = random.uniform(0.3, 0.5)
         compress_ratio = max(0.45, 1.0 - (abs(angle) / 60.0) * squish_intensity)
-        
+
         # Apply 2D Rotation and Perspective Width Scale
         img = img.rotate(angle, resample=Image.BICUBIC, fillcolor=bg_color)
-        new_w = int(base_size * compress_ratio)
-        img = img.resize((new_w, base_size), resample=Image.BICUBIC)
+        new_w = int(canvas_size * compress_ratio)
+        img = img.resize((new_w, canvas_size), resample=Image.BICUBIC)
 
         # ==========================================
         # ROTATION-AWARE TIGHT ZOOM CROP 
@@ -475,11 +498,11 @@ class SyntheticJerseyEngine:
         rotated_w = current_num_w * math.cos(angle_rad) + num_h * math.sin(angle_rad)
         rotated_h = current_num_w * math.sin(angle_rad) + num_h * math.cos(angle_rad)
         
-        # Keep crops only modestly tighter than before so the digits stay fully visible.
-        view_size_x = max(56, int(rotated_w / random.uniform(0.80, 0.93)))
-        view_size_y = max(64, int(rotated_h / random.uniform(0.70, 0.85)))
+        # Tight crop — number fills ~95% of the frame.
+        view_size_x = max(56, int(rotated_w / random.uniform(0.90, 0.97)))
+        view_size_y = max(64, int(rotated_h / random.uniform(0.88, 0.96)))
 
-        image_center = base_size / 2
+        image_center = canvas_size / 2
         dx = num_center_x - image_center
         dy = num_center_y - image_center
 
@@ -500,10 +523,10 @@ class SyntheticJerseyEngine:
                 transformed_center_x += side_context_shift
         transformed_corners = []
         for point_x, point_y in number_corners:
-            dx = point_x - image_center
-            dy = point_y - image_center
-            rotated_x = image_center + dx * math.cos(actual_angle_rad) - dy * math.sin(actual_angle_rad)
-            rotated_y = image_center + dx * math.sin(actual_angle_rad) + dy * math.cos(actual_angle_rad)
+            dx_p = point_x - image_center
+            dy_p = point_y - image_center
+            rotated_x = image_center + dx_p * math.cos(actual_angle_rad) - dy_p * math.sin(actual_angle_rad)
+            rotated_y = image_center + dx_p * math.sin(actual_angle_rad) + dy_p * math.cos(actual_angle_rad)
             transformed_corners.append((rotated_x * compress_ratio, rotated_y))
 
         half_w = view_size_x / 2
@@ -511,7 +534,7 @@ class SyntheticJerseyEngine:
         pad_left = max(0, int(math.ceil(half_w - transformed_center_x)))
         pad_right = max(0, int(math.ceil(transformed_center_x + half_w - new_w)))
         pad_top = max(0, int(math.ceil(half_h - transformed_center_y)))
-        pad_bottom = max(0, int(math.ceil(transformed_center_y + half_h - base_size)))
+        pad_bottom = max(0, int(math.ceil(transformed_center_y + half_h - canvas_size)))
 
         if pad_left or pad_right or pad_top or pad_bottom:
             img = ImageOps.expand(img, border=(pad_left, pad_top, pad_right, pad_bottom), fill=bg_color)
